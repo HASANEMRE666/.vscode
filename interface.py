@@ -4,12 +4,13 @@ import requests
 import random
 from sqlalchemy import create_engine, text
 from fpdf import FPDF
+import os
 
 # 1. Sayfa Ayarları
 st.set_page_config(page_title="Trendyol Veri Analiz Merkezi", layout="wide")
 st.title("🚀 Uçtan Uca Akıllı Satış & Analiz Paneli")
 
-# 2. API'den Canlı Şehir Verisi Çekme (Hafızada tutar)
+# 2. API'den Canlı Şehir Verisi Çekme
 @st.cache_data
 def sehirleri_getir():
     try:
@@ -20,62 +21,76 @@ def sehirleri_getir():
 
 sehir_havuzu = sehirleri_getir()
 
-# --- VERİTABANI BAĞLANTI BÖLÜMÜ BAŞLANGICI ---
+# 3. Veritabanı Bağlantısı ve Veri Hazırlama (HIBRET YAPI)
+# Bu kısım internette hata almanı önler.
+engine = None
+df = pd.DataFrame()
+
 try:
-    # Kendi bilgisayarındayken burası çalışacak
+    # Önce yerel veritabanını dene
     engine = create_engine('postgresql+psycopg2://postgres:hasan123@localhost:5432/postgres')
     df = pd.read_sql("SELECT * FROM satislar", engine)
-except Exception as e:
-    # İnternetteki (GitHub/Streamlit) site burayı çalıştıracak (Hata vermemesi için)
-    st.warning("⚠️ Yerel veritabanı bulunamadı. Şu an örnek verilerle çalışılıyor.")
-    data = {
-        'satis_id': [1, 2, 3],
-        'urun_adi': ['Trendyol Elbise', 'Nike Ayakkabı', 'Samsung Telefon'],
-        'miktar': [5, 2, 1],
-        'fiyat': [450, 2100, 15000]
-    }
-    df = pd.DataFrame(data)
-# --- VERİTABANI BAĞLANTI BÖLÜMÜ BİTİŞİ ---
-    
-    # Lokasyonu Müşteri ID ile eşleştir (Canlı veri için dinamik yapı)
+    # Veritabanı başarılıysa internet için yedekle
+    df.to_csv("satislar_yedek.csv", index=False)
+except Exception:
+    # Veritabanı yoksa (Streamlit Cloud'dayken) yedek dosyadan oku
+    if os.path.exists("satislar_yedek.csv"):
+        df = pd.read_csv("satislar_yedek.csv")
+    else:
+        # Hiçbiri yoksa boş tablo oluştur (Çökme olmasın)
+        df = pd.DataFrame(columns=['musteri_id', 'urun_adi'])
+
+# Veri varsa şehirleri eşleştir
+if not df.empty:
     df['sehir'] = df['musteri_id'].apply(lambda x: sehir_havuzu[x % len(sehir_havuzu)])
 
-    # --- SIDEBAR: KONTROL VE VERİ GİRİŞİ ---
-    st.sidebar.header("🛠️ İşlem Merkezi")
-    
-    # Ürün Seçimi
+# --- SIDEBAR: KONTROL VE VERİ GİRİŞİ ---
+st.sidebar.header("🛠️ İşlem Merkezi")
+
+if not df.empty:
     urunler = sorted(df['urun_adi'].unique())
     hedef_urun = st.sidebar.selectbox("Analiz Edilecek Ana Ürün:", urunler)
+else:
+    hedef_urun = "Veri Yok"
+    st.sidebar.warning("Veritabanı veya yedek dosya bulunamadı.")
 
-    st.sidebar.markdown("---")
-    st.sidebar.subheader("➕ Yeni Satış Ekle")
-    with st.sidebar.form("yeni_kayit_formu", clear_on_submit=True):
-        yeni_id = st.number_input("Müşteri ID", min_value=1, step=1)
-        yeni_urun = st.selectbox("Satılan Ürün", ["Utu", "Utu Masasi", "Kirec Cozucu", "Camasir Sepeti", "Deterjan"])
-        kaydet = st.form_submit_button("Sisteme İşle")
+st.sidebar.markdown("---")
+st.sidebar.subheader("➕ Yeni Satış Ekle")
+with st.sidebar.form("yeni_kayit_formu", clear_on_submit=True):
+    yeni_id = st.number_input("Müşteri ID", min_value=1, step=1)
+    yeni_urun = st.selectbox("Satılan Ürün", ["Utu", "Utu Masasi", "Kirec Cozucu", "Camasir Sepeti", "Deterjan"])
+    kaydet = st.form_submit_button("Sisteme İşle")
 
-    if kaydet:
-        with engine.connect() as conn:
-            sorgu = text("INSERT INTO satislar (musteri_id, urun_adi) VALUES (:m_id, :u_adi)")
-            conn.execute(sorgu, {"m_id": yeni_id, "u_adi": yeni_urun})
-            conn.commit()
-        st.cache_data.clear() # Önemli: Analizi sıfırla ki yeni veriyi görsün
-        st.sidebar.success(f"ID:{yeni_id} için {yeni_urun} kaydedildi!")
-        st.rerun()
+if kaydet:
+    if engine:
+        try:
+            with engine.connect() as conn:
+                sorgu = text("INSERT INTO satislar (musteri_id, urun_adi) VALUES (:m_id, :u_adi)")
+                conn.execute(sorgu, {"m_id": yeni_id, "u_adi": yeni_urun})
+                conn.commit()
+            st.cache_data.clear() 
+            st.sidebar.success(f"ID:{yeni_id} için {yeni_urun} kaydedildi!")
+            st.rerun()
+        except Exception as e:
+            st.sidebar.error(f"Kayıt Hatası: {e}")
+    else:
+        st.sidebar.error("⚠️ Yeni kayıt sadece yerel veritabanı bağlıyken yapılabilir!")
 
-    # --- ANALİZ MOTORU ---
-    # Hedef ürünü alan müşterileri bul
+# --- ANALİZ MOTORU VE GÖRSELLEŞTİRME ---
+if not df.empty and hedef_urun != "Veri Yok":
     hedef_alan_musteriler = df[df['urun_adi'] == hedef_urun]['musteri_id'].unique()
     
-    # Bu müşterilerin aldığı DİĞER ürünleri bul
     diger_urunler = df[df['musteri_id'].isin(hedef_alan_musteriler) & (df['urun_adi'] != hedef_urun)]
     diger_urunler = diger_urunler.drop_duplicates(subset=['musteri_id', 'urun_adi'])
     
     analiz = diger_urunler['urun_adi'].value_counts().reset_index()
     analiz.columns = ['Ürün', 'Adet']
-    analiz['Güven Oranı (%)'] = (analiz['Adet'] / len(hedef_alan_musteriler)) * 100
+    
+    if len(hedef_alan_musteriler) > 0:
+        analiz['Güven Oranı (%)'] = (analiz['Adet'] / len(hedef_alan_musteriler)) * 100
+    else:
+        analiz['Güven Oranı (%)'] = 0
 
-    # --- GÖRSELLEŞTİRME ---
     col1, col2 = st.columns([1, 1.2])
     
     with col1:
@@ -87,11 +102,9 @@ except Exception as e:
         st.bar_chart(data=analiz, x='Ürün', y='Güven Oranı (%)')
 
     st.divider()
-    
-    # --- LOKASYON ANALİZİ ---
     st.subheader("📍 Bölgesel Dağılım (Müşteri Lokasyonları)")
     sehir_ozeti = df[df['urun_adi'] == hedef_urun]['sehir'].value_counts()
-    st.bar_chart(sehir_ozeti, color="#FF4B4B") # Trendyol kırmızısına yakın bir renk
+    st.bar_chart(sehir_ozeti, color="#FF4B4B")
 
     # --- PDF RAPORLAMA ---
     def pdf_hazirla():
@@ -109,6 +122,5 @@ except Exception as e:
 
     st.sidebar.markdown("---")
     st.sidebar.download_button("📄 PDF Analiz Raporu İndir", data=pdf_hazirla(), file_name="rapor.pdf")
-
-except Exception as e:
-    st.error(f"⚠️ Bağlantı veya Kod Hatası: {e}")
+else:
+    st.info("Analiz yapılacak veri bulunamadı. Lütfen veritabanı bağlantısını kontrol edin veya yeni satış ekleyin.")
