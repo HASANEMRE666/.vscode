@@ -20,12 +20,22 @@ def sehirleri_getir():
 
 sehir_havuzu = sehirleri_getir()
 
-# 3. Veritabanı Bağlantısı
-engine = create_engine('postgresql+psycopg2://postgres:hasan123@localhost:5432/postgres')
-
+# --- VERİTABANI BAĞLANTI BÖLÜMÜ BAŞLANGICI ---
 try:
-    # SQL'den güncel veriyi çek
+    # Kendi bilgisayarındayken burası çalışacak
+    engine = create_engine('postgresql+psycopg2://postgres:hasan123@localhost:5432/postgres')
     df = pd.read_sql("SELECT * FROM satislar", engine)
+except Exception as e:
+    # İnternetteki (GitHub/Streamlit) site burayı çalıştıracak (Hata vermemesi için)
+    st.warning("⚠️ Yerel veritabanı bulunamadı. Şu an örnek verilerle çalışılıyor.")
+    data = {
+        'satis_id': [1, 2, 3],
+        'urun_adi': ['Trendyol Elbise', 'Nike Ayakkabı', 'Samsung Telefon'],
+        'miktar': [5, 2, 1],
+        'fiyat': [450, 2100, 15000]
+    }
+    df = pd.DataFrame(data)
+# --- VERİTABANI BAĞLANTI BÖLÜMÜ BİTİŞİ ---
     
     # Lokasyonu Müşteri ID ile eşleştir (Canlı veri için dinamik yapı)
     df['sehir'] = df['musteri_id'].apply(lambda x: sehir_havuzu[x % len(sehir_havuzu)])
